@@ -1,37 +1,18 @@
 // SPDX-License-Identifier: MIT
 /*
-   ____            __   __        __   _
-  / __/__ __ ___  / /_ / /  ___  / /_ (_)__ __
- _\ \ / // // _ \/ __// _ \/ -_)/ __// / \ \ /
-/___/ \_, //_//_/\__//_//_/\__/ \__//_/ /_\_\
-     /___/
 
-* Synthetix: YAMRewards.sol
-*
-* Docs: https://docs.synthetix.io/
-*
-*
-* MIT License
-* ===========
-*
-* Copyright (c) 2020 Synthetix
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in all
-* copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+██████╗ ███████╗██████╗  █████╗ ███████╗███████╗
+██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔════╝██╔════╝
+██║  ██║█████╗  ██████╔╝███████║███████╗█████╗  
+██║  ██║██╔══╝  ██╔══██╗██╔══██║╚════██║██╔══╝  
+██████╔╝███████╗██████╔╝██║  ██║███████║███████╗
+╚═════╝ ╚══════╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝
+                                               
+
+* Debase: RandomizedCounter.sol
+* Description:
+* Counts rebases and distributes rewards when a random threshold is triggered.
+* Coded by: punkUnknown
 */
 
 pragma solidity >=0.6.6;
@@ -43,7 +24,6 @@ import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@openzeppelin/upgrades/contracts/Initializable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "hardhat/console.sol";
 
 interface IRandomNumberConsumer {
     function getRandomNumber(uint256 userProvidedSeed) external;
@@ -108,6 +88,8 @@ contract RandomizedCounter is
     event LogSetRandomNumberConsumer(
         IRandomNumberConsumer randomNumberConsumer_
     );
+    event LogSetMultiSigAddress(address multiSigAddress_);
+    event LogSetMultiSigRewardPercentage(uint256 multiSigRewardPercentage_);
     event LogRevokeRewardDuration(uint256 revokeRewardDuration_);
     event LogLastRandomThreshold(uint256 lastRandomThreshold_);
     event LogSetBlockDuration(uint256 blockDuration_);
@@ -192,6 +174,10 @@ contract RandomizedCounter is
     // The array of normal distribution value data
     uint256[100] public normalDistribution;
 
+    address public multiSigAddress;
+    uint256 public multiSigRewardPercentage;
+    uint256 public multiSigRewardToClaimShare;
+
     mapping(address => uint256) public userRewardPerTokenPaid;
     mapping(address => uint256) public rewards;
 
@@ -208,22 +194,6 @@ contract RandomizedCounter is
             userRewardPerTokenPaid[account] = rewardPerTokenStored;
         }
         _;
-    }
-
-    function mulDiv(
-        uint256 x,
-        uint256 y,
-        uint256 z
-    ) internal pure returns (uint256) {
-        uint256 a = x.div(z);
-        uint256 b = x.mod(z); // x = a * z + b
-        uint256 c = y.div(z);
-        uint256 d = y.mod(z); // y = c * z + d
-
-        uint256 res1 = a.mul(b).mul(z).add(a).mul(d);
-        uint256 res2 = b.mul(c).add(b.mul(d)).div(z);
-
-        return res1.add(res2);
     }
 
     /**
@@ -341,6 +311,19 @@ contract RandomizedCounter is
         emit LogSetRandomNumberConsumer(randomNumberConsumer);
     }
 
+    function setMultiSigRewardPercentage(uint256 multiSigRewardPercentage_)
+        external
+        onlyOwner
+    {
+        multiSigRewardPercentage = multiSigRewardPercentage_;
+        emit LogSetMultiSigRewardPercentage(multiSigRewardPercentage);
+    }
+
+    function setMultiSigAddress(address multiSigAddress_) external onlyOwner {
+        multiSigAddress = multiSigAddress_;
+        emit LogSetMultiSigAddress(multiSigAddress);
+    }
+
     /**
      * @notice Function to set the normal distribution array and its associated mean/deviation
      */
@@ -415,7 +398,7 @@ contract RandomizedCounter is
 
         if (newBufferFunds) {
             uint256 previousUnusedRewardToClaim =
-                mulDiv(debase.totalSupply(), lastRewardPercentage, 10**18);
+                debase.totalSupply().mul(lastRewardPercentage).div(10**18);
 
             if (
                 debase.balanceOf(address(this)) >= previousUnusedRewardToClaim
@@ -436,18 +419,27 @@ contract RandomizedCounter is
                 (beforePeriodFinish || block.number >= periodFinish)
             ) {
                 uint256 rewardToClaim =
-                    mulDiv(debasePolicyBalance, rewardPercentage, 10**18);
-                lastRewardPercentage = mulDiv(
-                    rewardToClaim,
-                    10**18,
+                    debasePolicyBalance.mul(rewardPercentage).div(10**18);
+
+                uint256 multiSigRewardAmount =
+                    rewardToClaim.mul(multiSigRewardPercentage).div(10**18);
+
+                lastRewardPercentage = rewardToClaim.mul(10**18).div(
                     debase.totalSupply()
                 );
 
-                if (debasePolicyBalance >= rewardToClaim) {
+                multiSigRewardToClaimShare = multiSigRewardAmount
+                    .mul(10**18)
+                    .div(debase.totalSupply());
+
+                uint256 totalRewardToClaim =
+                    rewardToClaim.add(multiSigRewardAmount);
+
+                if (totalRewardToClaim <= debasePolicyBalance) {
                     newBufferFunds = true;
                     randomNumberConsumer.getRandomNumber(block.number);
-                    emit LogRewardsClaimed(rewardToClaim);
-                    return rewardToClaim;
+                    emit LogRewardsClaimed(totalRewardToClaim);
+                    return totalRewardToClaim;
                 }
             }
         } else if (countInSequence) {
@@ -464,9 +456,7 @@ contract RandomizedCounter is
                         rewardRate.mul(revokeRewardDuration);
 
                     uint256 rewardToRevokeAmount =
-                        mulDiv(
-                            debase.totalSupply(),
-                            rewardToRevokeShare,
+                        debase.totalSupply().mul(rewardToRevokeShare).div(
                             10**18
                         );
 
@@ -497,9 +487,18 @@ contract RandomizedCounter is
         if (count >= lastRandomThreshold) {
             startNewDistributionCycle();
             count = 0;
+
+            if (multiSigRewardToClaimShare != 0) {
+                uint256 amountToClaim =
+                    debase.totalSupply().mul(multiSigRewardToClaimShare).div(
+                        10**18
+                    );
+
+                debase.transfer(multiSigAddress, amountToClaim);
+            }
         } else {
             uint256 rewardToClaim =
-                mulDiv(debase.totalSupply(), lastRewardPercentage, 10**18);
+                debase.totalSupply().mul(lastRewardPercentage).div(10**18);
 
             debase.safeTransfer(policy, rewardToClaim);
             emit LogClaimRevoked(rewardToClaim);
@@ -595,7 +594,7 @@ contract RandomizedCounter is
             rewards[msg.sender] = 0;
 
             uint256 rewardToClaim =
-                mulDiv(debase.totalSupply(), reward, 10**18);
+                debase.totalSupply().mul(reward).div(10**18);
 
             debase.safeTransfer(msg.sender, rewardToClaim);
 
@@ -605,6 +604,12 @@ contract RandomizedCounter is
     }
 
     function startNewDistributionCycle() internal updateReward(address(0)) {
+        // https://sips.synthetix.io/sips/sip-77
+        require(
+            debase.balanceOf(address(this)) < uint256(-1) / 10**18,
+            "Rewards: rewards too large, would lock"
+        );
+
         if (block.number >= periodFinish) {
             rewardRate = lastRewardPercentage.div(blockDuration);
         } else {

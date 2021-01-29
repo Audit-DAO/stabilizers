@@ -57,12 +57,13 @@ describe('Debase/Dai Randomized Counter', function() {
 	describe('Deploy and Initialize', function() {
 		let randomizedCounter: RandomizedCounter;
 		let randomNumberConsumer: MockRandomNumberConsumer;
-		let degovLP: Token;
+		let debasedaiLP: Token;
 		let link: Token;
 		let debase: Debase;
 		let address: string;
-		let degovLpUser2: Token;
+		let debasedaiLpUser2: Token;
 		let randomizedCounter2: RandomizedCounter;
+		let multiSigAddress: string;
 
 		const duration = 2;
 		const userLpLimit = parseEther('10');
@@ -74,6 +75,7 @@ describe('Debase/Dai Randomized Counter', function() {
 		const revokeReward = true;
 		const normalDistributionMean = 5;
 		const normalDistributionDeviation = 2;
+		const multiSigRewardPercentage = parseUnits('1', 17);
 		//prettier-ignore
 		const normalDistribution = [8, 2, 1, 7, 10, 7, 5, 5, 3, 8, 5, 5, 3, 8, 4, 6, 5, 5, 3, 7, 6, 9, 8, 7, 6, 6, 5, 8, 6, 2, 8, 9, 5, 5, 4, 3, 8, 1, 5, 5, 5, 3, 5, 4, 8, 5, 6, 3, 4, 1, 3, 4, 3, 6, 4, 6, 5, 7, 6, 7, 5, 4, 1, 5, 6, 5, 7, 9, 3, 5, 4, 7, 3, 8, 7, 5, 5, 8, 0, 7, 4, 3, 6, 6, 4, 4, 5, 2, 4, 6, 6, 8, 8, 3, 7, 6, 7, 4, 4, 6]
 		const vrf = '0xb3dCcb4Cf7a26f6cf6B120Cf5A73875B7BBc655B';
@@ -83,13 +85,15 @@ describe('Debase/Dai Randomized Counter', function() {
 		before(async function() {
 			address = await accounts[0].getAddress();
 			let address2 = await accounts[1].getAddress();
+			let address3 = await accounts[2].getAddress();
 
+			multiSigAddress = address3;
 			debase = await debaseFactory.deploy();
-			degovLP = await tokenFactory.deploy('DEGOVLP', 'DEGOVLP');
+			debasedaiLP = await tokenFactory.deploy('DEBASEDAILP', 'DEBASEDAILP');
 			link = await tokenFactory.deploy('LINK', 'LINK');
-			degovLpUser2 = await degovLP.connect(accounts[1]);
+			debasedaiLpUser2 = await debasedaiLP.connect(accounts[1]);
 			randomizedCounter = await randomizedCounterFactory.deploy();
-			await degovLP.transfer(address2, parseEther('200'));
+			await debasedaiLP.transfer(address2, parseEther('200'));
 
 			randomNumberConsumer = await mockRandomNumberConsumerFactory.deploy(
 				address,
@@ -100,7 +104,7 @@ describe('Debase/Dai Randomized Counter', function() {
 
 			await randomizedCounter.initialize(
 				debase.address,
-				degovLP.address,
+				debasedaiLP.address,
 				address,
 				randomNumberConsumer.address,
 				link.address,
@@ -115,6 +119,9 @@ describe('Debase/Dai Randomized Counter', function() {
 				normalDistributionDeviation,
 				normalDistribution
 			);
+
+			await randomizedCounter.setMultiSigAddress(multiSigAddress);
+			await randomizedCounter.setMultiSigRewardPercentage(multiSigRewardPercentage);
 			randomizedCounter2 = await randomizedCounter.connect(accounts[1]);
 			await randomizedCounter.setRevokeReward(revokeReward);
 		});
@@ -123,8 +130,8 @@ describe('Debase/Dai Randomized Counter', function() {
 			it('Reward token should be debase', async function() {
 				expect(await randomizedCounter.debase()).eq(debase.address);
 			});
-			it('Pair token should be degov lp', async function() {
-				expect(await randomizedCounter.y()).eq(degovLP.address);
+			it('Pair token should be debasedai lp', async function() {
+				expect(await randomizedCounter.y()).eq(debasedaiLP.address);
 			});
 			it('Policy should be policy contract', async function() {
 				expect(await randomizedCounter.policy()).eq(address);
@@ -162,6 +169,12 @@ describe('Debase/Dai Randomized Counter', function() {
 			it('Distribution should be correct', async function() {
 				expect(await randomizedCounter.normalDistributionDeviation()).eq(normalDistributionDeviation);
 			});
+			it('Multi Sig Address should be correct', async function() {
+				expect(await randomizedCounter.multiSigAddress()).eq(multiSigAddress);
+			});
+			it('Multi Sig Reward Percentage should be correct', async function() {
+				expect(await randomizedCounter.multiSigRewardPercentage()).eq(multiSigRewardPercentage);
+			});
 		});
 
 		describe('When Pool is disabled', () => {
@@ -180,7 +193,7 @@ describe('Debase/Dai Randomized Counter', function() {
 
 			describe('When pool is not rewarded balance', () => {
 				before(async function() {
-					await degovLP.approve(randomizedCounter.address, parseEther('10'));
+					await debasedaiLP.approve(randomizedCounter.address, parseEther('10'));
 				});
 				it('Should be enabled', async function() {
 					expect(await randomizedCounter.poolEnabled()).to.be.true;
@@ -201,8 +214,8 @@ describe('Debase/Dai Randomized Counter', function() {
 
 			describe('User/Pool Lp Limits', () => {
 				before(async function() {
-					await degovLP.approve(randomizedCounter.address, parseEther('20'));
-					await degovLpUser2.approve(randomizedCounter.address, parseEther('20'));
+					await debasedaiLP.approve(randomizedCounter.address, parseEther('20'));
+					await debasedaiLpUser2.approve(randomizedCounter.address, parseEther('20'));
 				});
 				it('User cant stake more than user lp limit once', async function() {
 					await expect(randomizedCounter.stake(parseEther('11'))).to.be.revertedWith(
@@ -273,9 +286,13 @@ describe('Debase/Dai Randomized Counter', function() {
 					});
 					it('Check stabilizer function call should emit reward claim with correct reward amount', async function() {
 						let rewardToClaim = parseEther('100').mul(rewardPercentage).div(parseEther('1'));
+						let multiSigClaim = rewardToClaim
+							.mul(await randomizedCounter.multiSigRewardPercentage())
+							.div(parseEther('1'));
+
 						await expect(randomizedCounter.checkStabilizerAndGetReward(1, 1, 1, parseEther('100'))).to
 							.emit(randomizedCounter, 'LogRewardsClaimed')
-							.withArgs(rewardToClaim);
+							.withArgs(rewardToClaim.add(multiSigClaim));
 					});
 					it('Count should increase', async function() {
 						expect(await randomizedCounter.count()).to.eq(1);
@@ -320,7 +337,9 @@ describe('Debase/Dai Randomized Counter', function() {
 						});
 					});
 					describe('When random threshold for claim function does hit target count by getting a threshold', () => {
+						let multiSigBalanceBefore: BigNumber;
 						before(async function() {
+							multiSigBalanceBefore = await debase.balanceOf(multiSigAddress);
 							expect(await randomizedCounter.checkStabilizerAndGetReward(1, 1, 1, parseEther('100')));
 							await debase.transfer(
 								randomizedCounter.address,
@@ -340,6 +359,14 @@ describe('Debase/Dai Randomized Counter', function() {
 									(await randomizedCounter.lastUpdateBlock()).add(5),
 									4
 								);
+						});
+						it('MultiSig Reward Amount should increase by correct amount', async function() {
+							let multiSigIncreaseBy = (await debase.totalSupply())
+								.mul(await randomizedCounter.multiSigRewardToClaimShare())
+								.div(parseEther('1'));
+							expect(await debase.balanceOf(multiSigAddress)).to.eq(
+								multiSigBalanceBefore.add(multiSigIncreaseBy)
+							);
 						});
 						it('Should not emit rewards claimed as period not finished', async function() {
 							await expect(
